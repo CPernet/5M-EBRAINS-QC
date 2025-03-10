@@ -7,7 +7,7 @@ function dataout = FiveM_EEGprep(varargin)
 % increase memory allocation: Home --> Preferences --> General --> Java
 % Heap Memory and adjust there as needed
 %
-% FORMAT dataout = 5M_EEGprep(folderin,subjectID,BIDSfolder)
+% FORMAT dataout = FiveM_EEGprep(folderin,subjectID,BIDSfolder)
 %
 % INPUTS if empty, user is prompted
 %        folderin is the mff folder e.g. /.../Caludia_20250224_190613.mff
@@ -20,8 +20,8 @@ function dataout = FiveM_EEGprep(varargin)
 %         return created folders and QC as a structure
 %                dataout.raw the BIDS raw data folder
 %                dataout.derivatives the BIDS derivatives data folder
-%                dataout.QC.delta the average power spectrum
-%                dataout.QC.alpha the average power spectrum between 8-12Hz
+%                dataout.QC the average power spectrum in bands averaged
+% %                         over some channels
 %
 % The preprossecing workflow is as follow:
 % 1  - upsampling at 2K Hz
@@ -34,7 +34,6 @@ function dataout = FiveM_EEGprep(varargin)
 % 7  - ICA and ICA label on 5Hz data and back projection on 1Hz data
 %     (trying to minimize slow drift over 20 min acquistion)
 % 8  - ASR to remove remaining bad segments
-% 9  - random assigment of trials and simple GLM (mean)
 % 10 - basic stats on where we have power, and get average power spectrum
 %
 % Requires EEGLAB and plugins (plugins are installed automatically if not
@@ -43,7 +42,7 @@ function dataout = FiveM_EEGprep(varargin)
 % Cyril Pernet, Neurobiololy Research Unit, Copenhagen, DK
 % Ilaria Mazzonetto,
 %
-% CCBY - March 2025
+% March 2025
 
 %% start eeglab and get missing dependencies if needed
 [ALLEEG, EEG, CURRENTSET, ALLCOM] = eeglab;
@@ -103,6 +102,7 @@ end
 %% EEG data conversion to BIDS
 bids_exportmff(folderin, subjectID, ...
     fullfile(BIDSfolder,[newname filesep 'eeg']));
+dataout.raw = fullfile(BIDSfolder,[newname filesep 'eeg']);
 
 %% Preprocess
 
@@ -147,10 +147,15 @@ EEG = pop_eegstats(EEG, 'thetarange',[4 7.9] ,'alpharange',[8 12.9] , ...
             'overlap',1,'iaf','on','iafminchan',1,'alphaasymmetry','off', ...
             'csvfile',fullfile(destination,[newname '_desc-power_eeg.csv']));
 pop_saveset(EEG, 'filename',[newname '_desc-ArtefactsCorr-preproc_task-rest'],'filepath',destination);
+dataout.derivatives = destination;
 
 % re-export in a main table for easier QC
 % from EEG.etc.eegstats average some channels of interests and make QC
 % (TBD)
+% dataout.QC.theta
+% dataout.QC.alpha
+% dataout.QC.beta
+% dataout.QC.gamma
 
 disp('data preprocessing and QC done')
 end
