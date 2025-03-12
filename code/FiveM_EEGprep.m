@@ -295,8 +295,15 @@ ECGchannel = find(arrayfun(@(x) strcmp(x,'ECG'),impedences.name));
 if ~isempty(ECGchannel)
     impedences(ECGchannel,:) = [];
 end
-absoluteimp = sum(impedences(:,5:end)>IMPTH,2);
-channellist = [channellist,find(table2array(absoluteimp))'];
+idx = arrayfun(@(x) contains(x,'impedendence'),impedences.Properties.VariableNames);
+if any(idx)
+    absoluteimp = table2array(sum(impedences(:,idx)>IMPTH,2))';
+    if sum(absoluteimp) == size(impedences,1)
+        warning('all impedences were found to be above the threshold %g, channels removal for impedence not performed',IMPTH);
+    else
+        channellist = [channellist,find(absoluteimp)];
+    end
+end
 EEG         = pop_select(EEG,'rmchannel',channellist);
 
 % downsample
