@@ -10,7 +10,7 @@ function dataout = FiveM_EEGprep(varargin)
 % FORMAT dataout = FiveM_EEGprep(folderin,subjectID,BIDSfolder)
 %
 % INPUTS if empty, user is prompted
-%        folderin is the mff folder e.g. /.../Caludia_20250224_190613.mff
+%        folderin is the mff folder e.g. /.../Claudia_20250224_190613.mff
 %        subject ID is a char to encode subject pseudoID e.g. '01'
 %        BIDSfolder is the root folder where 5M data are stored
 %
@@ -39,13 +39,12 @@ function dataout = FiveM_EEGprep(varargin)
 % Requires EEGLAB and plugins (plugins are installed automatically if not
 % there, but requires internet connection)
 %
-% Cyril Pernet, Neurobiololy Research Unit, Copenhagen, DK
-% Ilaria Mazzonetto,
+% Cyril Pernet & Kristoffer Brendstrup-Brix Neurobiololy Research Unit, Copenhagen, DK
 %
 % March 2025
 
 %% start eeglab and get missing dependencies if needed
-[ALLEEG, EEG, CURRENTSET, ALLCOM] = eeglab;
+eeglab
 if ~exist('pop_importbids','file')
     plugin_askinstall('EEG-BIDS',[],1);
 end
@@ -106,25 +105,38 @@ dataout.raw = fullfile(BIDSfolder,[newname filesep 'eeg']);
 
 %% Preprocess
 
-% MR filter
 EEG = pop_loadset(fullfile(BIDSfolder,[newname filesep 'eeg' filesep ...
     filesep newname '_task-rest_eeg.set']));
-EEG.data   = double(EEG.data);
-lpf        =  60; 
-L          =  20; % following their suggestion: It is recommended that you up-sample the data to bring the sampling frequency to about 20 kHz)
-window     = 10;% we tested different values, and this seemed to provide the best cleaning in terms of reducing the gradient artifact peak and its harmonics  );
-Trigs      = round([EEG.event(find(strcmp({EEG.event(:).code},'TREV'))).latency]);
-anc_chk    = 1;  
-opt1       = 0.03; % no significant impact when adjusting this parameter
-ECGchannel = find(arrayfun(@(x) strcmp(x.labels,'ECG'),EEG.chanlocs));
-opt3       = 'auto';
-EEG        = fmrib_fastr(EEG,lpf,L,window,Trigs,0,anc_chk,0,[],[],opt1,ECGchannel,opt3);
-EEG        = eeg_checkset(EEG);
+
+% Crop data at first to 10 sec after last TR event:
+fmri_cropVar = [EEG.event(find(strcmp({EEG.event.code},'TREV'),1,'first')).latency,...
+                EEG.event(find(strcmp({EEG.event.code},'TREV'),1,'last')).latency+10*1000];
+EEG          = pop_select(EEG,'time',[fmri_cropVar(1)/1000 fmri_cropVar(2)/1000]);
+
+% MR filter
+EEG.data     = double(EEG.data);
+lpf          = 60; 
+L            = 20; % following their suggestion: It is recommended that you up-sample the data to bring the sampling frequency to about 20 kHz)
+window       = 10;% we tested different values, and this seemed to provide the best cleaning in terms of reducing the gradient artifact peak and its harmonics  );
+Trigs        = round([EEG.event(find(strcmp({EEG.event(:).code},'TREV'))).latency]);
+anc_chk      = 1;  
+opt1         = 0.03; % no significant impact when adjusting this parameter
+ECGchannel   = find(arrayfun(@(x) strcmp(x.labels,'ECG'),EEG.chanlocs));
+opt3         = 'auto';
+EEG          = fmrib_fastr(EEG,lpf,L,window,Trigs,0,anc_chk,0,[],[],opt1,ECGchannel,opt3);
+EEG          = eeg_checkset(EEG);
+
+% Remove channels with infinite values induced by ANC:
+[errorChannels, ~] = find(~isfinite(EEG.data));
+errorChannels      = unique(errorChannels);
+if ~isempty(errorChannels)
+    EEG        = pop_select(EEG,'rmchannel', errorChannels);
+end
 
 % Cardiac artefacts
-EEG        = pop_fmrib_qrsdetect(EEG,ECGchannel,'qrs','no');
-EEG        = pop_fmrib_pas(EEG,'qrs','obs',4); % OBS method with npc = 4.
-EEG        = eeg_checkset(EEG);
+EEG          = pop_fmrib_qrsdetect(EEG,ECGchannel,'qrs','no');
+EEG          = pop_fmrib_pas(EEG,'qrs','obs',4); % OBS method with npc = 4.
+EEG          = eeg_checkset(EEG);
 
 % export to derivatives
 destination  = fullfile(BIDSfolder,['derivatives' filesep newname filesep 'eeg']);
@@ -151,11 +163,28 @@ dataout.derivatives = destination;
 
 % re-export in a main table for easier QC
 % from EEG.etc.eegstats average some channels of interests and make QC
-% (TBD)
-% dataout.QC.theta
-% dataout.QC.alpha
-% dataout.QC.beta
-% dataout.QC.gamma
+% dataout.QC.theta - average over fronto-central channels
+dataout.QC.theta = mean(EEG.etc.eegstats.power(1,[9 10 18 19 20 24 25 29 ...
+    30 31 32 35 36 37 41 42 45 46 49 50]));
+% dataout.QC.alpha - average over occipital-occipito-parietal channels 
+dataout.QC.alpha = mean(EEG.etc.eegstats.power(2,[62 67 68 69 70 71 75 76 84 85]));
+% dataout.QC.beta  - average over central channels
+dataout.QC.beta  = mean(EEG.etc.eegstats.power(3,[54 55 62 79 80 81 87 88 105 106 124 125]));
+% dataout.QC.gamma - median over all all channels
+dataout.QC.gamma = median(EEG.etc.eegstats.power(4,:));
+
+power_table = fullfile(BIDSfolder,['derivatives' filesep 'EEG_powerQC.tsv']);
+if exist(power_table,"file")
+    t = readtable(power_table);
+    t = [t ; table({newname},dataout.QC.theta,dataout.QC.beta,...
+        dataout.QC.alpha,dataout.QC.gamma,...
+        'VariableNames',{'participant_id','theta','beta','alpha','gamma'})];
+else % first time
+    t    = table({newname},dataout.QC.theta,dataout.QC.beta,...
+        dataout.QC.alpha,dataout.QC.gamma,...
+        'VariableNames',{'participant_id','theta','beta','alpha','gamma'});
+end
+writetable(t,power_table,'FileType', 'text','Delimiter','\t')
 
 disp('data preprocessing and QC done')
 end
@@ -177,7 +206,6 @@ if iscell(subID)
     subID = cell2mat(subID);
 end
 task_name          = 'rest';
-export_task_events = 'on';
 
 % read and write the data
 EEG = pop_mffimport({eegfolder},{'code','mffkeys','sourcedevice'});
@@ -215,11 +243,15 @@ insides = readstruct([eegfolder filesep 'info1.xml']);
 electrodes = readtable(fullfile(tmp_folder, ['sub-' subID '_electrodes.tsv']),'FileType','text');
 for i = 1:length(insides.calibrations.calibration)
     imp     = arrayfun(@(x) x.Text,insides.calibrations.calibration(i).channels.ch)';
+    if sum(fix(imp)) == length(imp) % 1st value is 1, not impedences
+        disp('calibration value skipped')
+    else
     impName = sprintf('impedendence_measurement_%g',i);
     if length(imp)<size(electrodes,1)
-        imp = [imp;NaN(size(electrodes,1)-size(imp,1),1)];
+        imp = [imp;NaN(size(electrodes,1)-size(imp,1),1)]; %#ok<AGROW>
     end
     electrodes = addvars(electrodes,imp,'NewVariableNames',impName);
+    end
 end
 writetable(electrodes, fullfile(tmp_folder, ['sub-' subID '_electrodes.tsv']), ...
     'FileType', 'text', 'Delimiter', '\t',"WriteVariableNames",true);
@@ -262,7 +294,7 @@ function EEG = resting_eeg_preproc(fullfilename)
 
 % some hard coded values (to change as nedded)
 % see clean_rawdata, pop_runica
-IMPTH              = 1.05; % threshold for impedences > 50kohm
+IMPTH              = 50; % threshold for impedences > 50kohm
 ChannelCriterion   = 0.9; % interchannel correlation to remove bad channels
 LineNoiseCriterion = 3 ; % devition from avg
 ICAalg             = 'runica'; % which ICA method to use
@@ -295,15 +327,8 @@ ECGchannel = find(arrayfun(@(x) strcmp(x,'ECG'),impedences.name));
 if ~isempty(ECGchannel)
     impedences(ECGchannel,:) = [];
 end
-idx = arrayfun(@(x) contains(x,'impedendence'),impedences.Properties.VariableNames);
-if any(idx)
-    absoluteimp = table2array(sum(impedences(:,idx)>IMPTH,2))';
-    if sum(absoluteimp) == size(impedences,1)
-        warning('all impedences were found to be above the threshold %g, channels removal for impedence not performed',IMPTH);
-    else
-        channellist = [channellist,find(absoluteimp)];
-    end
-end
+absoluteimp = sum(impedences(:,5:end)>IMPTH,2);
+channellist = [channellist,find(table2array(absoluteimp))'];
 EEG         = pop_select(EEG,'rmchannel',channellist);
 
 % downsample
@@ -330,7 +355,7 @@ end
 EEG = pop_reref(EEG,[],'interpchan','off');
 
 % ICA cleaning the usual way:
-% EEG = pop_runica(EEG, 'icatype',ICAalg,'concatcond','on','options',{'pca',EEG.nbchan-1});
+% EEG = pop_runica(EEG, 'icatype',ICAalg,'concatcond','on');
 % EEG = pop_iclabel(EEG, 'default');
 % EEG = pop_icflag(EEG,[NaN NaN;0.8 1;0.8 1;NaN NaN;NaN NaN;NaN NaN;NaN NaN]);
 % EEG = pop_subcomp(EEG,[],0);
@@ -339,7 +364,7 @@ EEG = pop_reref(EEG,[],'interpchan','off');
 % assuming slow drift with saline drying over 20 min acquisition
 % this can bias the ICA, so compute on 2Hz filtered 
 tmpeeg = pop_eegfiltnew(EEG,2,0);
-tmpeeg = pop_runica(tmpeeg, 'icatype',ICAalg,'concatcond','on','options',{'pca',EEG.nbchan-1});
+tmpeeg = pop_runica(tmpeeg, 'icatype',ICAalg,'concatcond','on');
 % project solution to the 0.5Hz filtered data
 EEG.icasphere   = [];
 EEG.icasphere   = tmpeeg.icasphere;
@@ -361,4 +386,5 @@ EEG = pop_clean_rawdata(EEG,'FlatlineCriterion','off','ChannelCriterion','off',.
     'LineNoiseCriterion','off','Highpass','off','BurstCriterion',20,...
     'WindowCriterion',0.25,'BurstRejection','on','Distance','Euclidian',...
     'WindowCriterionTolerances',[-Inf 7] );
+
 end
